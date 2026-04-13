@@ -505,6 +505,27 @@
         }
         .tree-btn:hover { border-color: var(--primary); color: var(--primary); }
 
+        .copy-ascii-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            background: var(--primary-light);
+            border-color: var(--primary-glow);
+            color: var(--primary);
+            font-weight: 600;
+        }
+        .copy-ascii-btn:hover {
+            background: var(--primary-dark) !important;
+            border-color: var(--primary-dark) !important;
+            color: white !important;
+            box-shadow: 0 3px 10px var(--primary-glow);
+        }
+        .copy-ascii-btn.copied {
+            background: var(--success) !important;
+            border-color: var(--success) !important;
+            color: white !important;
+        }
+
         .tree-body {
             padding: 0.6rem 0.5rem;
             max-height: 520px;
@@ -781,6 +802,10 @@
                         </div>
                         <button class="tree-btn" onclick="expandAll()">Expand All</button>
                         <button class="tree-btn" onclick="collapseAll()">Collapse All</button>
+                        <button class="tree-btn copy-ascii-btn" id="copyAsciiBtn" onclick="copyAsciiTree()">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                            Copy ASCII Tree
+                        </button>
                     </div>
                 </div>
                 <div class="tree-body" id="treeBody">
@@ -991,6 +1016,86 @@
         el.textContent = `${sel} of ${total} files selected`;
         el.style.color = sel === 0 ? 'var(--danger)' : 'var(--text-sub)';
         downloadBtn.disabled = sel === 0;
+    }
+
+    // ASCII TREE COPY
+    function buildAsciiTree(node, prefix, isRoot) {
+        let lines = [];
+        const keys = Object.keys(node).filter(k => k !== '__isFile').sort((a, b) => {
+            const af = !!node[a].__isFile, bf = !!node[b].__isFile;
+            if (af && !bf) return 1;
+            if (!af && bf) return -1;
+            return a.localeCompare(b);
+        });
+
+        keys.forEach((key, i) => {
+            const item = node[key];
+            const isLast = i === keys.length - 1;
+            const connector = isLast ? '└── ' : '├── ';
+            const childPrefix = prefix + (isLast ? '    ' : '│   ');
+            const isFile = !!item.__isFile;
+
+            lines.push(prefix + connector + key);
+
+            if (!isFile) {
+                const childLines = buildAsciiTree(item, childPrefix, false);
+                lines = lines.concat(childLines);
+            }
+        });
+
+        return lines;
+    }
+
+    function copyAsciiTree() {
+        if (!Object.keys(zipTree).length) {
+            toast('No tree to copy. Upload a ZIP first.', 'danger');
+            return;
+        }
+
+        // Find root name from zip file or use generic name
+        const rootKeys = Object.keys(zipTree).filter(k => k !== '__isFile');
+        let asciiLines = ['.'];
+
+        if (rootKeys.length === 1 && !zipTree[rootKeys[0]].__isFile) {
+            // Single root folder - show it as root
+            asciiLines = [rootKeys[0]];
+            const childLines = buildAsciiTree(zipTree[rootKeys[0]], '', false);
+            asciiLines = asciiLines.concat(childLines);
+        } else {
+            // Multiple roots
+            asciiLines = ['.'];
+            const rootLines = buildAsciiTree(zipTree, '', false);
+            asciiLines = asciiLines.concat(rootLines);
+        }
+
+        const asciiText = asciiLines.join('\n');
+
+        navigator.clipboard.writeText(asciiText).then(() => {
+            const btn = document.getElementById('copyAsciiBtn');
+            btn.classList.add('copied');
+            btn.innerHTML = `
+                <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                Copied!
+            `;
+            setTimeout(() => {
+                btn.classList.remove('copied');
+                btn.innerHTML = `
+                    <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                    Copy ASCII Tree
+                `;
+            }, 2000);
+        }).catch(() => {
+            // Fallback for older browsers
+            const ta = document.createElement('textarea');
+            ta.value = asciiText;
+            ta.style.position = 'fixed';
+            ta.style.opacity = '0';
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand('copy');
+            ta.remove();
+            toast('ASCII Tree copied!', 'success');
+        });
     }
 
     // TREE RENDER
