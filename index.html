@@ -1009,6 +1009,14 @@
         updateSummary();
     }
 
+    function getSelectedPaths() {
+        const selected = new Set();
+        document.querySelectorAll('.file-chk:checked').forEach(cb => {
+            selected.add(cb.getAttribute('data-path'));
+        });
+        return selected;
+    }
+
     function updateSummary() {
         const total = document.querySelectorAll('.file-chk').length;
         const sel = document.querySelectorAll('.file-chk:checked').length;
@@ -1016,10 +1024,12 @@
         el.textContent = `${sel} of ${total} files selected`;
         el.style.color = sel === 0 ? 'var(--danger)' : 'var(--text-sub)';
         downloadBtn.disabled = sel === 0;
+        // Re-render tree so deselected files disappear
+        renderTree();
     }
 
     // ASCII TREE COPY
-    function buildAsciiTree(node, prefix, isRoot) {
+    function buildAsciiTree(node, prefix, isRoot, selectedPaths, currentPath) {
         let lines = [];
         const keys = Object.keys(node).filter(k => k !== '__isFile').sort((a, b) => {
             const af = !!node[a].__isFile, bf = !!node[b].__isFile;
@@ -1028,17 +1038,40 @@
             return a.localeCompare(b);
         });
 
-        keys.forEach((key, i) => {
+        // Filter keys: skip deselected files and empty folders
+        const visibleKeys = keys.filter(key => {
             const item = node[key];
-            const isLast = i === keys.length - 1;
+            const isFileNode = !!item.__isFile;
+            const nodePath = currentPath ? currentPath + key + (isFileNode ? '' : '/') : key + (isFileNode ? '' : '/');
+            if (isFileNode) {
+                return [...selectedPaths].some(p => p === nodePath || p.endsWith('/' + key));
+            } else {
+                function hasSelected(n, path) {
+                    for (const k in n) {
+                        if (k === '__isFile') continue;
+                        const cp = path + k + (n[k].__isFile ? '' : '/');
+                        if (n[k].__isFile) { if ([...selectedPaths].some(p => p === cp || p.endsWith('/' + k))) return true; }
+                        else { if (hasSelected(n[k], cp)) return true; }
+                    }
+                    return false;
+                }
+                const nodePath2 = currentPath ? currentPath + key + '/' : key + '/';
+                return hasSelected(item, nodePath2);
+            }
+        });
+
+        visibleKeys.forEach((key, i) => {
+            const item = node[key];
+            const isLast = i === visibleKeys.length - 1;
             const connector = isLast ? '└── ' : '├── ';
             const childPrefix = prefix + (isLast ? '    ' : '│   ');
             const isFile = !!item.__isFile;
+            const nodePath = currentPath ? currentPath + key + (isFile ? '' : '/') : key + (isFile ? '' : '/');
 
             lines.push(prefix + connector + key);
 
             if (!isFile) {
-                const childLines = buildAsciiTree(item, childPrefix, false);
+                const childLines = buildAsciiTree(item, childPrefix, false, selectedPaths, nodePath);
                 lines = lines.concat(childLines);
             }
         });
@@ -1054,17 +1087,18 @@
 
         // Find root name from zip file or use generic name
         const rootKeys = Object.keys(zipTree).filter(k => k !== '__isFile');
+        const selectedPaths = getSelectedPaths();
         let asciiLines = ['.'];
 
         if (rootKeys.length === 1 && !zipTree[rootKeys[0]].__isFile) {
             // Single root folder - show it as root
             asciiLines = [rootKeys[0]];
-            const childLines = buildAsciiTree(zipTree[rootKeys[0]], '', false);
+            const childLines = buildAsciiTree(zipTree[rootKeys[0]], '', false, selectedPaths, rootKeys[0] + '/');
             asciiLines = asciiLines.concat(childLines);
         } else {
             // Multiple roots
             asciiLines = ['.'];
-            const rootLines = buildAsciiTree(zipTree, '', false);
+            const rootLines = buildAsciiTree(zipTree, '', false, selectedPaths, '');
             asciiLines = asciiLines.concat(rootLines);
         }
 
@@ -1106,10 +1140,11 @@
             body.innerHTML = '<div class="tree-empty">No files found.</div>';
             return;
         }
-        renderLevel(body, zipTree, []);
+        const selectedPaths = getSelectedPaths();
+        renderLevel(body, zipTree, [], selectedPaths, '');
     }
 
-    function renderLevel(container, node, ancestors) {
+    function renderLevel(container, node, ancestors, selectedPaths, currentPath) {
         // sort: folders first, then files
         const keys = Object.keys(node).filter(k => k !== '__isFile').sort((a, b) => {
             const af = isFile(node[a]), bf = isFile(node[b]);
@@ -1120,8 +1155,32 @@
 
         keys.forEach((key, i) => {
             const item = node[key];
-            const last = i === keys.length - 1;
             const fileNode = isFile(item);
+            const nodePath = currentPath ? currentPath + key + (fileNode ? '' : '/') : key + (fileNode ? '' : '/');
+
+            // Skip deselected files
+            if (fileNode) {
+                // Find if any selected path ends with this nodePath
+                const isSelected = [...selectedPaths].some(p => p === nodePath || p.endsWith('/' + key));
+                if (!isSelected) return;
+            } else {
+                // Skip folder if it has no selected descendants
+                function hasSelectedDescendant(n, path) {
+                    for (const k in n) {
+                        if (k === '__isFile') continue;
+                        const childPath = path + k + (n[k].__isFile ? '' : '/');
+                        if (n[k].__isFile) {
+                            if ([...selectedPaths].some(p => p === childPath || p.endsWith('/' + k))) return true;
+                        } else {
+                            if (hasSelectedDescendant(n[k], childPath)) return true;
+                        }
+                    }
+                    return false;
+                }
+                if (!hasSelectedDescendant(item, nodePath)) return;
+            }
+
+            const last = i === keys.length - 1;
             const children = Object.keys(item).filter(k => k !== '__isFile');
             const hasKids = !fileNode && children.length > 0;
 
@@ -1176,7 +1235,7 @@
 
             // badge
             if (!fileNode && hasKids) {
-                const fc = countDeep(item);
+                const fc = countDeepSelected(item, nodePath, selectedPaths);
                 const badge = document.createElement('span');
                 badge.className = 'tree-badge';
                 badge.textContent = `${fc} file${fc !== 1 ? 's' : ''}`;
@@ -1189,7 +1248,7 @@
             if (hasKids) {
                 const childWrap = document.createElement('div');
                 childWrap.className = 'tree-children';
-                renderLevel(childWrap, item, [...ancestors, !last]);
+                renderLevel(childWrap, item, [...ancestors, !last], selectedPaths, nodePath);
                 nodeEl.appendChild(childWrap);
 
                 row.addEventListener('click', () => {
@@ -1211,6 +1270,20 @@
             if (k === '__isFile') continue;
             if (node[k].__isFile) n++;
             else n += countDeep(node[k]);
+        }
+        return n;
+    }
+
+    function countDeepSelected(node, basePath, selectedPaths) {
+        let n = 0;
+        for (const k in node) {
+            if (k === '__isFile') continue;
+            const childPath = basePath + k + (node[k].__isFile ? '' : '/');
+            if (node[k].__isFile) {
+                if ([...selectedPaths].some(p => p === childPath || p.endsWith('/' + k))) n++;
+            } else {
+                n += countDeepSelected(node[k], childPath, selectedPaths);
+            }
         }
         return n;
     }
