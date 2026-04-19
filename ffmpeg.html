@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>MP4 → OGV Converter</title>
+
+  <!--
+    ══════════════════════════════════════════════════════════════════
+    FIX: Service Worker কে CDN থেকে না লোড করে, JS code কে
+         Blob URL বানিয়ে সেটা থেকে register করা হয়।
+         Blob URL সবসময় same-origin হয়, তাই SecurityError আসে না।
+    ══════════════════════════════════════════════════════════════════
+  -->
+  <script>
+    (function () {
+      if (window.crossOriginIsolated) return; // ইতিমধ্যে isolated, কাজ নেই
+
+      if (!('serviceWorker' in navigator)) {
+        console.warn('Service Worker supported না, SharedArrayBuffer নাও কাজ করতে পারে');
+        return;
+      }
+
+      // Service Worker-এর পুরো কোড একটি string হিসেবে
+      var swCode = [
+        "self.addEventListener('install', () => self.skipWaiting());",
+        "self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));",
+        "self.addEventListener('fetch', function(event) {",
+        "  if (event.request.cache === 'only-if-cached' && event.request.mode !== 'same-origin') return;",
+        "  event.respondWith(",
+        "    fetch(event.request).then(function(response) {",
+        "      if (response.status === 0) return response;",
+        "      var h = new Headers(response.headers);",
+        "      h.set('Cross-Origin-Embedder-Policy', 'credentialless');",
+        "      h.set('Cross-Origin-Opener-Policy', 'same-origin');",
+        "      return new Response(response.body, {",
+        "        status: response.status,",
+        "        statusText: response.statusText,",
+        "        headers: h",
+        "      });",
+        "    }).catch(function(e){ console.error(e); })",
+        "  );",
+        "});"
+      ].join('\n');
+
+      // Blob URL = same-origin, SecurityError আর আসবে না
+      var blob  = new Blob([swCode], { type: 'text/javascript' });
+      var swURL = URL.createObjectURL(blob);
+
+      navigator.serviceWorker.register(swURL).then(function(reg) {
+        console.log('[COI] Service Worker registered:', reg.scope);
+        // Controller না থাকলে SW এখনো active হয়নি — reload করতে হবে
+        if (!navigator.serviceWorker.controller) {
+          window.location.reload();
+        }
+      }).catch(function(err) {
+        console.error('[COI] SW registration failed:', err);
+      });
+    })();
+  </script>
+
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{
+      font-family:'Segoe UI',sans-serif;min-height:100vh;
+      background:linear-gradient(135deg,#0f0c29,#302b63,#24243e);
+      display:flex;align-items:center;justify-content:center;
+      color:#fff;padding:20px;
+    }
+    .card{
+      background:rgba(255,255,255,.07);backdrop-filter:blur(16px);
+      border:1px solid rgba(255,255,255,.15);border-radius:20px;
+      padding:40px;width:100%;max-width:560px;
+      box-shadow:0 20px 60px rgba(0,0,0,.4);
+    }
+    h1{
+      text-align:center;font-size:1.8rem;margin-bottom:6px;
+      background:linear-gradient(90deg,#a78bfa,#60a5fa);
+      -webkit-background-clip:text;-webkit-text-fill-color:transparent;
+    }
+    .subtitle{text-align:center;font-size:.85rem;color:rgba(255,255,255,.5);margin-bottom:28px}
+
+    .banner{
+      border-radius:10px;padding:12px 16px;
+      margin-bottom:20px;font-size:.82rem;
+      display:none;line-height:1.5;
+    }
+    .ok  {background:rgba(16,185,129,.15);border:1px solid rgba(16,185,129,.4);color:#6ee7b7}
+    .warn{background:rgba(245,158,11,.12);border:1px solid rgba(245,158,11,.35);color:#fcd34d}
+    .err {background:rgba(239,68,68,.13);border:1px solid rgba(239,68,68,.4);color:#fca5a5}
+
+    .drop-zone{
+      border:2px dashed rgba(167,139,250,.5);border-radius:14px;
+      padding:40px 20px;text-align:center;cursor:pointer;
+      transition:all .3s;background:rgba(167,139,250,.05);margin-bottom:20px;
+    }
+    .drop-zone:hover,.drag-over{border-color:#a78bfa!important;background:rgba(167,139,250,.12)!important}
+    .drop-icon{font-size:3rem;margin-bottom:12px}
+    .drop-zone p{color:rgba(255,255,255,.7);font-size:.95rem}
+    .drop-zone span{color:#a78bfa;font-weight:600}
+    #fileInput{display:none}
+
+    .file-info{
+      display:none;align-items:center;gap:12px;
+      background:rgba(96,165,250,.1);border:1px solid rgba(96,165,250,.3);
+      border-radius:10px;padding:14px 18px;margin-bottom:18px;
+    }
+    .file-info .icon{font-size:1.8rem}
+    .file-details{flex:1;overflow:hidden}
+    .file-name{font-weight:600;font-size:.9rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .file-size{font-size:.78rem;color:rgba(255,255,255,.5);margin-top:2px}
+
+    .btn{
+      display:block;width:100%;padding:14px;border:none;border-radius:12px;
+      font-size:1rem;font-weight:700;cursor:pointer;transition:all .3s;text-align:center;
+      text-decoration:none;
+    }
+    .btn-convert{background:linear-gradient(90deg,#7c3aed,#2563eb);color:#fff}
+    .btn-convert:hover:not(:disabled){transform:translateY(-2px);box-shadow:0 8px 24px rgba(124,58,237,.4)}
+    .btn-convert:disabled{opacity:.45;cursor:not-allowed;transform:none!important}
+    .btn-download{
+      background:linear-gradient(90deg,#059669,#0284c7);color:#fff;
+      margin-top:12px;display:none;
+    }
+    .btn-download:hover{transform:translateY(-2px);box-shadow:0 8px 24px rgba(5,150,105,.4)}
+
+    .progress-wrap{display:none;margin:18px 0 0}
+    .progress-label{font-size:.82rem;color:rgba(255,255,255,.6);margin-bottom:8px;display:flex;justify-content:space-between}
+    .progress-bar-bg{background:rgba(255,255,255,.1);border-radius:99px;height:8px;overflow:hidden}
+    .progress-bar{height:100%;width:0%;border-radius:99px;background:linear-gradient(90deg,#7c3aed,#60a5fa);transition:width .3s}
+
+    .log{
+      display:none;margin-top:18px;background:rgba(0,0,0,.35);border-radius:10px;
+      padding:12px 14px;font-size:.75rem;font-family:monospace;
+      color:#86efac;max-height:150px;overflow-y:auto;line-height:1.75;
+    }
+    .note{margin-top:22px;font-size:.76rem;color:rgba(255,255,255,.33);text-align:center;line-height:1.6}
+
+    .loader{
+      display:inline-block;width:13px;height:13px;
+      border:2px solid rgba(255,255,255,.3);border-top-color:#fff;
+      border-radius:50%;animation:spin .7s linear infinite;
+      margin-right:7px;vertical-align:middle;
+    }
+    @keyframes spin{to{transform:rotate(360deg)}}
+  </style>
+</head>
+<body>
+<div class="card">
+  <h1>🎬 MP4 → OGV</h1>
+  <p class="subtitle">Video একদম unchanged — শুধু container format বদলাবে</p>
+
+  <div class="banner" id="banner"></div>
+
+  <div class="drop-zone" id="dropZone">
+    <div class="drop-icon">📁</div>
+    <p>এখানে <strong>.mp4</strong> ফাইল drag করুন<br>অথবা <span>ক্লিক করে বেছে নিন</span></p>
+    <input type="file" id="fileInput" accept="video/mp4,.mp4"/>
+  </div>
+
+  <div class="file-info" id="fileInfo">
+    <div class="icon">🎥</div>
+    <div class="file-details">
+      <div class="file-name" id="fileName">—</div>
+      <div class="file-size" id="fileSize">—</div>
+    </div>
+  </div>
+
+  <button class="btn btn-convert" id="convertBtn" disabled>Convert করুন</button>
+
+  <div class="progress-wrap" id="progressWrap">
+    <div class="progress-label">
+      <span id="progressStatus">শুরু হচ্ছে...</span>
+      <span id="progressPct">0%</span>
+    </div>
+    <div class="progress-bar-bg"><div class="progress-bar" id="progressBar"></div></div>
+  </div>
+
+  <div class="log" id="log"></div>
+  <a class="btn btn-download" id="downloadBtn">⬇️ OGV Download করুন</a>
+
+  <p class="note">
+    ⚙️ FFmpeg WASM দিয়ে browser-এই convert হয় — কোনো server-এ ফাইল যায় না।<br>
+    প্রথমবার FFmpeg core লোড হতে একটু সময় লাগতে পারে (~30 MB)।
+  </p>
+</div>
+
+<script type="module">
+// ── correct ESM import paths ─────────────────────────────────────────────────
+import { FFmpeg }
+  from 'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/esm/ffmpeg.js';
+import { toBlobURL, fetchFile }
+  from 'https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.2/dist/esm/index.js';
+
+// ── DOM refs ─────────────────────────────────────────────────────────────────
+const banner      = document.getElementById('banner');
+const dropZone    = document.getElementById('dropZone');
+const fileInput   = document.getElementById('fileInput');
+const fileInfo    = document.getElementById('fileInfo');
+const fileNameEl  = document.getElementById('fileName');
+const fileSizeEl  = document.getElementById('fileSize');
+const convertBtn  = document.getElementById('convertBtn');
+const progressWrap= document.getElementById('progressWrap');
+const progressBar = document.getElementById('progressBar');
+const progressPct = document.getElementById('progressPct');
+const progressSts = document.getElementById('progressStatus');
+const logEl       = document.getElementById('log');
+const downloadBtn = document.getElementById('downloadBtn');
+
+// ── cross-origin isolation status banner ─────────────────────────────────────
+if (window.crossOriginIsolated) {
+  showBanner('ok',  '✅ SharedArrayBuffer সক্রিয় — সব ঠিক আছে, convert করতে পারবেন।');
+} else {
+  showBanner('warn','⚠️ Service Worker এখনো active হয়নি। Page একবার reload করুন।');
+}
+
+// ── state ────────────────────────────────────────────────────────────────────
+let ffmpegInst = null;
+let selectedFile = null;
+let outputURL  = null;
+
+// ── file drop / pick ─────────────────────────────────────────────────────────
+dropZone.addEventListener('click', () => fileInput.click());
+dropZone.addEventListener('dragover',  e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault(); dropZone.classList.remove('drag-over');
+  const f = e.dataTransfer.files[0];
+  if (f && (f.type === 'video/mp4' || f.name.toLowerCase().endsWith('.mp4'))) setFile(f);
+  else alert('শুধু .mp4 ফাইল সাপোর্ট করে!');
+});
+fileInput.addEventListener('change', () => { if (fileInput.files[0]) setFile(fileInput.files[0]); });
+
+function setFile(f) {
+  selectedFile = f;
+  fileNameEl.textContent = f.name;
+  fileSizeEl.textContent = formatBytes(f.size);
+  fileInfo.style.display = 'flex';
+  convertBtn.disabled    = false;
+  downloadBtn.style.display = 'none';
+  logEl.style.display   = 'none';
+  logEl.innerHTML        = '';
+  progressWrap.style.display = 'none';
+  setProgress(0, 'শুরু হচ্ছে...');
+}
+
+// ── load FFmpeg (once) ───────────────────────────────────────────────────────
+async function loadFFmpeg() {
+  if (ffmpegInst?.loaded) return;
+  ffmpegInst = new FFmpeg();
+  ffmpegInst.on('log',      ({ message }) => addLog(message));
+  ffmpegInst.on('progress', ({ progress }) =>
+    setProgress(Math.min(Math.round(progress * 100), 99), 'Converting...')
+  );
+  addLog('⏳ FFmpeg core লোড হচ্ছে (প্রথমবার ~30MB ডাউনলোড)...');
+  const BASE = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/esm';
+  await ffmpegInst.load({
+    coreURL: await toBlobURL(`${BASE}/ffmpeg-core.js`,   'text/javascript'),
+    wasmURL: await toBlobURL(`${BASE}/ffmpeg-core.wasm`, 'application/wasm'),
+  });
+  addLog('✅ FFmpeg লোড সম্পন্ন!');
+}
+
+// ── convert ──────────────────────────────────────────────────────────────────
+convertBtn.addEventListener('click', async () => {
+  if (!selectedFile) return;
+
+  if (!window.crossOriginIsolated) {
+    showBanner('err', '❌ SharedArrayBuffer এখনো নেই। Page একবার hard-refresh করুন (Ctrl+Shift+R)।');
+    return;
+  }
+
+  convertBtn.disabled    = true;
+  convertBtn.innerHTML   = '<span class="loader"></span>Converting...';
+  downloadBtn.style.display = 'none';
+  progressWrap.style.display = 'block';
+  logEl.style.display    = 'block';
+  logEl.innerHTML        = '';
+  setProgress(0, 'শুরু হচ্ছে...');
+
+  try {
+    await loadFFmpeg();
+
+    const inName  = 'input.mp4';
+    const outName = selectedFile.name.replace(/\.mp4$/i, '') + '.ogv';
+
+    addLog('📥 ফাইল virtual FS-এ লেখা হচ্ছে...');
+    await ffmpegInst.writeFile(inName, await fetchFile(selectedFile));
+
+    addLog('🔄 -c copy (stream copy — re-encode নেই, quality 100% unchanged)...');
+    setProgress(10, 'Converting...');
+
+    await ffmpegInst.exec(['-i', inName, '-c', 'copy', outName]);
+
+    addLog('📤 Output পড়া হচ্ছে...');
+    const data = await ffmpegInst.readFile(outName);
+    const blob = new Blob([data.buffer], { type: 'video/ogg' });
+
+    if (outputURL) URL.revokeObjectURL(outputURL);
+    outputURL = URL.createObjectURL(blob);
+
+    downloadBtn.href        = outputURL;
+    downloadBtn.download    = outName;
+    downloadBtn.textContent = `⬇️ ${outName} (${formatBytes(blob.size)}) Download করুন`;
+    downloadBtn.style.display = 'block';
+
+    setProgress(100, '✅ সম্পন্ন!');
+    addLog('🎉 Conversion সফল! Download করুন।');
+    showBanner('ok', `✅ ${outName} তৈরি হয়েছে (${formatBytes(blob.size)})`);
+
+  } catch (err) {
+    addLog('❌ Error: ' + err.message);
+    progressSts.textContent = 'ব্যর্থ হয়েছে';
+    showBanner('err', '❌ Error: ' + err.message);
+    console.error(err);
+  } finally {
+    convertBtn.disabled  = false;
+    convertBtn.innerHTML = 'আবার Convert করুন';
+  }
+});
+
+// ── helpers ──────────────────────────────────────────────────────────────────
+function setProgress(pct, label) {
+  progressBar.style.width = pct + '%';
+  progressPct.textContent = pct + '%';
+  progressSts.textContent = label;
+}
+function addLog(msg) {
+  const d = document.createElement('div');
+  d.textContent = msg;
+  logEl.appendChild(d);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+function showBanner(type, msg) {
+  banner.className     = 'banner ' + type;
+  banner.innerHTML     = msg;
+  banner.style.display = 'block';
+}
+function formatBytes(b) {
+  if (b < 1024)    return b + ' B';
+  if (b < 1048576) return (b / 1024).toFixed(1) + ' KB';
+  return (b / 1048576).toFixed(1) + ' MB';
+}
+</script>
+</body>
+</html>
